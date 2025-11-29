@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
-import re  # For coordinate parsing
+import re
 
 import altair as alt
 import folium
@@ -147,7 +147,7 @@ with st.sidebar:
 
     st.markdown("---")
     
-    uploaded_file = st.file_uploader("📂 Upload Data", type=["csv", "xlsx", "xls"])
+    uploaded_file = st.file_uploader(" Upload Data", type=["csv", "xlsx", "xls"])
     
     st.subheader("Grid Settings")
     min_grid = st.slider("Min Grid (km)", 0.1, 2.0, 0.5, step=0.1)
@@ -172,7 +172,7 @@ with st.sidebar:
 # ---------------- Main App Logic ----------------
 
 if not uploaded_file:
-    st.info("👋 Welcome! Please upload a crime data file (CSV or Excel) to start.")
+    st.info(" Welcome! Please upload a crime data file (CSV or Excel) to start.")
     st.stop()
 
 # ==========================================
@@ -200,7 +200,7 @@ try:
                 df = pd.read_csv(uploaded_file, sep=None, engine='python', on_bad_lines='skip')
 
 except Exception as e:
-    st.error(f"❌ Critical Error: Could not read file. Details: {e}")
+    st.error(f" Critical Error: Could not read file. Details: {e}")
     st.stop()
 
 
@@ -211,6 +211,8 @@ for col in df.columns:
     if "date" in c_lower: colmap[col] = "datetime"
     elif "lat" in c_lower: colmap[col] = "latitude"
     elif "lon" in c_lower: colmap[col] = "longitude"
+    elif "primary" in c_lower and "type" in c_lower: pass
+        
 df = df.rename(columns=colmap)
 
 # 3. ROBUST COORDINATE CONVERSION
@@ -221,9 +223,14 @@ if "longitude" in df.columns:
 
 # 4. Detect Crime Type Column
 crime_type_col = None
-candidates = [c for c in df.columns if "type" in str(c).lower() or "desc" in str(c).lower() or "category" in str(c).lower()]
-if len(candidates) > 0:
-    crime_type_col = candidates[0]
+priority_cols = ["Primary type", "CrimeHead_Name", "Crime Type", "Type"]
+for p in priority_cols:
+    if p in df.columns:
+        crime_type_col = p
+        break
+if not crime_type_col:
+    candidates = [c for c in df.columns if "type" in str(c).lower() or "desc" in str(c).lower() or "category" in str(c).lower()]
+    if len(candidates) > 0: crime_type_col = candidates[0]
 
 # 5. PARSE DATETIME
 if "datetime" in df.columns:
@@ -231,35 +238,29 @@ if "datetime" in df.columns:
 
 # 6. Check Requirements & Clean
 if "latitude" not in df.columns or "longitude" not in df.columns:
-    st.error(f"❌ Column mismatch. Found: {list(df.columns)}. \n\nNeed: 'latitude', 'longitude' columns.")
+    st.error(f" Column mismatch. Found: {list(df.columns)}. \n\nNeed: 'latitude', 'longitude' columns.")
     st.stop()
 
-df = df.dropna(subset=["latitude", "longitude"]).copy()
-# Ensure numeric
+# Outlier Filtering (Fixes "Infinite Blue Line")
+df = df.dropna(subset=["latitude", "longitude"])
 df["latitude"] = pd.to_numeric(df["latitude"], errors='coerce')
 df["longitude"] = pd.to_numeric(df["longitude"], errors='coerce')
 df = df.dropna(subset=["latitude", "longitude"]).copy()
 
-# ==========================================
-# 7. OUTLIER FILTERING (FIXES INFINITE BLUE LINE)
-# ==========================================
-# Calculate median location
 mid_lat = df["latitude"].median()
 mid_lon = df["longitude"].median()
-
-# Keep only points within ~0.5 degrees (approx 50km) of the median
-# This discards outliers like (0,0) or (12, 700) that break the map
+# Filter points > 1 degree away from median
 mask = (
-    (df["latitude"] >= mid_lat - 0.5) & (df["latitude"] <= mid_lat + 0.5) &
-    (df["longitude"] >= mid_lon - 0.5) & (df["longitude"] <= mid_lon + 0.5)
+    (df["latitude"] >= mid_lat - 1.0) & (df["latitude"] <= mid_lat + 1.0) &
+    (df["longitude"] >= mid_lon - 1.0) & (df["longitude"] <= mid_lon + 1.0)
 )
 df = df[mask]
 
 if df.empty:
-    st.error("❌ No valid location data near the main cluster! Check if coordinates are correct.")
+    st.error("No valid location data near the main cluster!")
     st.stop()
 
-# 8. Filters
+# 7. Filters
 if crime_type_col:
     all_types = sorted(df[crime_type_col].dropna().astype(str).unique())
     selected_types = st.multiselect("Filter by Crime Type", all_types, default=all_types)
@@ -269,10 +270,10 @@ if crime_type_col:
 if date_filter_enabled and start_date and end_date and "datetime" in df.columns:
     df = df[(df["datetime"].dt.date >= start_date) & (df["datetime"].dt.date <= end_date)]
 
-st.success(f"✅ Loaded {len(df)} records.")
+st.success(f" Loaded {len(df)} records.")
 
 # ---------------- Model Execution ----------------
-with st.spinner("🤖 Analyzing crime patterns..."):
+with st.spinner(" Analyzing crime patterns..."):
     results = run_hotspot_model(df, min_grid, max_grid, step_grid)
 
 available_grids = sorted(results.keys())
@@ -302,10 +303,7 @@ with col_left:
 
 with col_right:
     st.subheader("Risk Map")
-    
-    # Recalculate center after outlier removal
     map_center = [df["latitude"].median(), df["longitude"].median()]
-    
     if search_btn and search_query:
         lat, lon = geocode_place(search_query)
         if lat: map_center = [lat, lon]
@@ -314,37 +312,21 @@ with col_right:
     
     if show_heatmap:
         heat_data = df[["latitude", "longitude"]].values.tolist()
-        if heat_data:
-            HeatMap(heat_data, radius=13, blur=18).add_to(m)
+        if heat_data: HeatMap(heat_data, radius=13, blur=18).add_to(m)
 
     if len(df) > 3:
         try:
-            # Using clean DF (outliers removed) prevents infinite blue line
             sample = df[["latitude", "longitude"]].sample(min(500, len(df))).to_numpy()
             hull = ConvexHull(sample)
-            folium.Polygon(
-                locations=sample[hull.vertices].tolist(), 
-                color="blue", weight=2, fill=True, fill_opacity=0.05
-            ).add_to(m)
+            folium.Polygon(locations=sample[hull.vertices].tolist(), color="blue", weight=2, fill=True, fill_opacity=0.05).add_to(m)
         except: pass
 
     marker_cluster = MarkerCluster().add_to(m)
-    # Ensure hotspots align with clean data
-    valid_hotspots = hotspots[
-        (hotspots["latitude"].between(mid_lat-0.5, mid_lat+0.5)) & 
-        (hotspots["longitude"].between(mid_lon-0.5, mid_lon+0.5))
-    ]
-    
+    valid_hotspots = hotspots[(hotspots["latitude"].between(mid_lat-1, mid_lat+1)) & (hotspots["longitude"].between(mid_lon-1, mid_lon+1))]
     for _, row in valid_hotspots.iterrows():
         if row["risk_score"] < med_risk: continue
         color = "#d32f2f" if row["risk_score"] >= high_risk else "#f57c00"
-        
-        folium.CircleMarker(
-            location=[row["latitude"], row["longitude"]],
-            radius=8 + (row["risk_score"] * 5),
-            color=color, fill=True, fill_opacity=0.7,
-            popup=f"Risk: {row['risk_score']:.2f}"
-        ).add_to(marker_cluster)
+        folium.CircleMarker([row["latitude"], row["longitude"]], radius=8 + (row["risk_score"]*5), color=color, fill=True, fill_opacity=0.7, popup=f"Risk: {row['risk_score']:.2f}").add_to(marker_cluster)
 
     st_folium(m, height=600)
 
@@ -356,7 +338,7 @@ if st.session_state["login"] and st.session_state["role"] == "Police/Admin":
     stats = compute_police_stats(df, hotspots, crime_type_col)
     
     if "datetime" in df.columns:
-        df["hour"] = df["datetime"].dt.hour
+        df["day_name"] = df["datetime"].dt.day_name()
         df["month_name"] = df["datetime"].dt.month_name()
         df["year"] = df["datetime"].dt.year
         
@@ -364,13 +346,8 @@ if st.session_state["login"] and st.session_state["role"] == "Police/Admin":
     r1_col1, r1_col2 = st.columns(2)
     
     with r1_col1:
-        st.subheader("📍 Crime Hotspots by Region")
-        reg_col = None
-        for c in df.columns:
-            if "region" in c.lower() or "station" in c.lower() or "area" in c.lower():
-                reg_col = c
-                break
-                
+        st.subheader("Crime Hotspots by Region")
+        reg_col = next((c for c in df.columns if "region" in c.lower() or "station" in c.lower()), None)
         if reg_col:
             c1 = alt.Chart(df).mark_bar().encode(
                 y=alt.Y(f"{reg_col}:N", sort='-x', title="Region / Station"),
@@ -380,40 +357,26 @@ if st.session_state["login"] and st.session_state["role"] == "Police/Admin":
             ).properties(height=350)
             st.altair_chart(c1, width="stretch")
         else:
-            st.info("No 'Region' column found in dataset.")
+            st.info("No 'Region' column found.")
 
     with r1_col2:
         st.subheader("📈 Trend Comparison (Year-over-Year)")
         ts = stats.get("timeseries")
-        
         if ts is not None and not ts.empty:
-            # FIX: Explicit Month Ordering
-            month_order = [
-                'January', 'February', 'March', 'April', 'May', 'June', 
-                'July', 'August', 'September', 'October', 'November', 'December'
-            ]
-            
+            month_order = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
             ts_chart = ts.copy()
             ts_chart["month"] = ts_chart["datetime"].dt.month_name()
             ts_chart["year"] = ts_chart["datetime"].dt.year
             
             base = alt.Chart(ts_chart).encode(
                 x=alt.X("month:O", sort=month_order, title="Month"),
-                y=alt.Y("sum(count):Q", title="Monthly Incidents"),
+                y=alt.Y("sum(count):Q", title="Incidents"),
                 color=alt.Color("year:N", title="Year", scale=alt.Scale(scheme="category10")),
-                tooltip=[
-                    alt.Tooltip("year:N", title="Year"),
-                    alt.Tooltip("month:O", title="Month"),
-                    alt.Tooltip("sum(count):Q", title="Incidents")
-                ]
+                tooltip=["year:N", "month:O", "sum(count):Q"]
             )
-            lines = base.mark_line(point=True, strokeWidth=3)
-            area = base.mark_area(opacity=0.1)
-            c2 = (area + lines).properties(height=350).interactive()
-            
-            st.altair_chart(c2, width="stretch")
+            st.altair_chart((base.mark_line(point=True) + base.mark_area(opacity=0.1)).properties(height=350).interactive(), width="stretch")
         else:
-            st.info("No time-series data available to plot trends.")
+            st.info("No time-series data.")
 
     # --- Row 2: Tactical Analysis ---
     st.markdown("### 🧩 Tactical Analysis Matrix")
@@ -430,49 +393,90 @@ if st.session_state["login"] and st.session_state["role"] == "Police/Admin":
             ).properties(height=400)
             st.altair_chart(c3, width="stretch")
         else:
-            st.warning("Need Region and Type columns for Matrix.")
+            st.warning("Need Region/Type columns.")
 
     with t2_col:
-        st.markdown("**2. Hourly Crime Profile (Peak Times)**")
+        # NEW: Day of Week Analysis (Replaces Hourly)
+        st.markdown("**2. Weekly Crime Pattern**")
+        st.caption("Incidents by Day of the Week")
         if "datetime" in df.columns and crime_type_col:
-            c4 = alt.Chart(df).mark_line(interpolate='monotone').encode(
-                x=alt.X("hour:O", title="Hour of Day (0-23)"),
-                y=alt.Y("count():Q", title="Incidents"),
-                color=alt.Color(f"{crime_type_col}:N", legend=alt.Legend(orient="bottom")),
-                tooltip=[crime_type_col, "hour", "count()"]
+            days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            c4 = alt.Chart(df).mark_bar().encode(
+                x=alt.X("day_name:O", sort=days_order, title="Day"),
+                y=alt.Y("count():Q", title="Total Incidents"),
+                color=alt.Color(f"{crime_type_col}:N", title="Crime Type", scale=alt.Scale(scheme="category20")),
+                tooltip=["day_name", f"{crime_type_col}", "count():Q"]
             ).properties(height=400)
             st.altair_chart(c4, width="stretch")
 
-    # --- Row 3: Risk Validation ---
-    st.markdown("### 🎯 Predictive Model Validation")
-    r3_col1, r3_col2 = st.columns([1, 1])
+    # --- Extra Row: Major Trends ---
+    st.markdown("### 📈 Major Crime Trends")
+    st.caption("Yearly trend of the Top 5 most frequent crimes")
+    if "datetime" in df.columns and crime_type_col:
+        top_5 = df[crime_type_col].value_counts().head(5).index.tolist()
+        c_extra = alt.Chart(df[df[crime_type_col].isin(top_5)]).mark_line(point=True).encode(
+            x=alt.X("year(datetime):O", title="Year"),
+            y=alt.Y("count():Q", title="Annual Cases"),
+            color=alt.Color(f"{crime_type_col}:N", title="Crime Type"),
+            tooltip=[f"{crime_type_col}", "year(datetime)", "count()"]
+        ).properties(height=300)
+        st.altair_chart(c_extra, width="stretch")
+
+    # --- Row 3: Strategic Overview ---
+    st.markdown("### 🍩 Strategic Overview")
+    r3_col1, r3_col2 = st.columns(2)
     
     with r3_col1:
+        st.subheader("Crime Type Distribution")
         if crime_type_col:
-            st.markdown("**Risk Score Distribution vs. Type**")
-            grid_deg = selected_grid * 0.009
-            df["gx"] = np.floor(df["longitude"]/grid_deg).astype(int)
-            df["gy"] = np.floor(df["latitude"]/grid_deg).astype(int)
-            df["grid_id"] = df["gx"].astype(str) + "_" + df["gy"].astype(str)
-            merged = df.merge(hotspots[["grid_id", "risk_score"]], on="grid_id")
+            top_crimes = df[crime_type_col].value_counts().head(10).index.tolist()
+            df_top = df[df[crime_type_col].isin(top_crimes)]
+            total = len(df_top)
             
-            base = alt.Chart(merged).encode(x=alt.X(f"{crime_type_col}:N", axis=alt.Axis(labelAngle=-45)))
-            boxplot = base.mark_boxplot(extent='min-max', color="grey").encode(y="risk_score:Q")
-            points = base.mark_circle(size=20, opacity=0.4).encode(
-                y="risk_score:Q", color=f"{crime_type_col}:N",
-                tooltip=[f"{crime_type_col}", "risk_score"]
-            ).transform_calculate(jitter='sqrt(-2*log(random()))*cos(2*PI*random())')
-            
-            st.altair_chart((boxplot + points).properties(height=400), width="stretch")
+            base = alt.Chart(df_top).encode(theta=alt.Theta("count():Q", stack=True))
+            pie = base.mark_arc(innerRadius=70, stroke="#fff").encode(
+                color=alt.Color(f"{crime_type_col}:N", legend=alt.Legend(orient="bottom", columns=2), scale=alt.Scale(scheme="tableau20")),
+                order=alt.Order("count():Q", sort="descending"),
+                tooltip=[f"{crime_type_col}", "count():Q"]
+            )
+            text = base.mark_text(radius=140).encode(
+                text=alt.Text("count():Q"), order=alt.Order("count():Q", sort="descending"), color=alt.value("black")
+            )
+            center = alt.Chart(pd.DataFrame({'t':[str(total)]})).mark_text(size=24, color="#333").encode(text='t')
+            st.altair_chart((pie + text + center).properties(height=400), width="stretch")
 
     with r3_col2:
-        st.markdown("**Detailed Hotspots Data**")
-        detailed = stats.get("detailed_hotspots")
-        if detailed is not None:
-            st.dataframe(
-                detailed[["grid_id", "risk_score", "nearby_crime_count", "latitude", "longitude"]].head(100),
-                height=400,
-                width="stretch"
-            )
-            csv_detailed = detailed.to_csv(index=False).encode("utf-8")
-            st.download_button("📥 Download Analysis CSV", csv_detailed, "detailed_analysis.csv", "text/csv")
+        st.markdown("**2. Weekly Crime Rhythm (Bubble Plot)**")
+        st.caption("Larger bubbles = More crimes on that day")
+        
+        if "datetime" in df.columns and crime_type_col:
+            # Ensure day_name exists (just in case)
+            if "day_name" not in df.columns:
+                df["day_name"] = df["datetime"].dt.day_name()
+                
+            days_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+            
+            # The "Punch Card" Chart
+            c4 = alt.Chart(df).mark_circle().encode(
+                # X-Axis: Days of the week
+                x=alt.X("day_name:O", sort=days_order, title=None),
+                
+                # Y-Axis: Crime Types
+                y=alt.Y(f"{crime_type_col}:N", title=None),
+                
+                # Bubble Size: Bigger = More Crimes
+                size=alt.Size("count():Q", legend=None, scale=alt.Scale(range=[50, 1000])),
+                
+                # Bubble Color: Darker = More Crimes (Magma scheme looks very modern)
+                color=alt.Color("count():Q", legend=None, scale=alt.Scale(scheme="magma")),
+                
+                tooltip=[
+                    alt.Tooltip("day_name", title="Day"),
+                    f"{crime_type_col}",
+                    alt.Tooltip("count():Q", title="Incidents")
+                ]
+            ).properties(height=400)
+            
+            st.altair_chart(c4, width="stretch")
+        else:
+            st.warning("Datetime column missing - Temporal charts disabled.")
